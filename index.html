@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>img2mesh</title>
+        <style>
+            body { margin: 0; }
+            canvas { display: block; }
+            #uploadForm { 
+                position: absolute; top: 10px; left: 10px; 
+            }
+            #measurementValue {
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                background-color: rgba(0, 0, 0, 0.7);
+                color: white;
+                padding: 5px 10px;
+                border-radius: 5px;
+                font-family: Arial, sans-serif;
+                font-size: 16px;
+            }
+            .spinner {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: 70px;
+                text-align: center;
+            }
+
+            .spinner > div {
+                width: 18px;
+                height: 18px;
+                background-color: #333;
+                border-radius: 100%;
+                display: inline-block;
+                animation: sk-bouncedelay 1.4s infinite ease-in-out both;
+            }
+
+            .spinner .bounce1 {
+                animation-delay: -0.32s;
+            }
+
+            .spinner .bounce2 {
+                animation-delay: -0.16s;
+            }
+
+            @keyframes sk-bouncedelay {
+                0%, 80%, 100% { transform: scale(0); }
+                40% { transform: scale(1.0); }
+            }
+        </style>
+    </head>
+    <body>
+        <form id="uploadForm">
+            <label for="imageUpload" style="font-family: Arial, sans-serif; font-size: 16px; margin-right: 10px;">Upload an image:</label>
+            <input type="file" id="imageUpload" accept="image/*" style="font-family: Arial, sans-serif; font-size: 16px;">
+            <button type="submit" style="font-family: Arial, sans-serif; font-size: 16px; margin-left: 10px;">Get Mesh</button>
+        </form>
+        <div id="measurementValue" style="font-family: Arial, sans-serif; font-size: 16px; margin-top: 10px;">0 units</div>    
+        <div id="loadingSpinner" class="spinner" style="display: none;">
+            <div class="bounce1"></div>
+            <div class="bounce2"></div>
+            <div class="bounce3"></div>
+            <p style="font-family: Arial, sans-serif; font-size: 16px; margin-top: 10px;">Loading...</p>
+        </div>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+        <script>
+            let scene, camera, renderer, controls;
+            let measurementLine, measurementText;
+            let clickedPoints = [];
+            let loadedModel;
+            let raycaster, mouse;
+            let pointMarkers = [];
+            let measurementRatio = 1;
+            let lastMeasuredDistance = 0;
+
+            init();
+            animate();
+            function showLoadingSpinner() {
+                document.getElementById('loadingSpinner').style.display = 'block';
+            }
+
+            function hideLoadingSpinner() {
+                document.getElementById('loadingSpinner').style.display = 'none';
+            }
+            function init() {
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0xbfe3dd);
+
+                camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.set(0, 0, -10);
+
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.outputEncoding = THREE.sRGBEncoding;
+                document.body.appendChild(renderer.domElement);
+                controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+                const dirLight = new THREE.DirectionalLight(0xffffff, 3);
+                dirLight.position.set(-3, 10, -10);
+                dirLight.castShadow = true;
+                dirLight.shadow.camera.top = 2;
+                dirLight.shadow.camera.bottom = -2;
+                dirLight.shadow.camera.left = -2;
+                dirLight.shadow.camera.right = 2;
+                dirLight.shadow.camera.near = 0.1;
+                dirLight.shadow.camera.far = 40;
+                scene.add(dirLight);
+
+                raycaster = new THREE.Raycaster();
+                mouse = new THREE.Vector2();
+
+                window.addEventListener('resize', onWindowResize, false);
+                renderer.domElement.addEventListener('click', onMouseClick, false);
+                document.getElementById('uploadForm').addEventListener('submit', handleFormSubmit);
+                initMeasurementRatio();
+            }
+
+            function handleFormSubmit(event) {
+                event.preventDefault();
+                const imageFile = document.getElementById('imageUpload').files[0];
+                if (imageFile) {
+                    uploadImageAndGetMesh(imageFile);
+                } else {
+                    alert('Please select an image to upload.');
+                }
+            }
+
+            function uploadImageAndGetMesh(imageFile) {
+                showLoadingSpinner();
+                const formData = new FormData();
+                formData.append('image', imageFile);
+                
+                console.log('Sending request to API...');
+                fetch('http://localhost:5000/generate_mesh', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    console.log('Received response:', response.status, response.statusText);
+                    if (!response.ok) {
+                        return response.text().then(text => {
+                            throw new Error(`HTTP error! status: ${response.status}, message: ${text}`);
+                        });
+                    }
+                    return response.arrayBuffer();
+                })
+                .then(data => {
+                    console.log('Received data of size:', data.byteLength, 'bytes');
+                    hideLoadingSpinner();
+                    loadMeshFromData(data);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert(`Failed to upload image or generate 3D model. Error: ${error.message}`);
+                });
+            }
+
+            function loadMeshFromData(data) {
+                const loader = new THREE.GLTFLoader();
+                loader.parse(data, '', (gltf) => {
+                    if (loadedModel) {
+                        scene.remove(loadedModel);
+                    }
+                    loadedModel = gltf.scene;
+                    scene.add(loadedModel);
+                    console.log('3D model loaded successfully');
+                    const box = new THREE.Box3().setFromObject(loadedModel);
+                    const center = box.getCenter(new THREE.Vector3());
+                    loadedModel.position.sub(center);
+                    
+                    // const size = box.getSize(new THREE.Vector3());
+                    // const maxDim = Math.max(size.x, size.y, size.z);
+                    // const scale = 5 / maxDim;
+                    // loadedModel.scale.multiplyScalar(scale);
+
+                    // camera.position.set(0, 0, 5);
+                    // controls.target.copy(loadedModel.position);
+                    // controls.update();
+                }, (error) => {
+                    console.error('Error parsing glTF data:', error);
+                });
+            }
+            function onWindowResize() {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+
+            function clearPreviousMeasurement() {
+                if (measurementLine) {
+                    scene.remove(measurementLine);
+                    measurementLine = null;
+                }
+                if (measurementText) {
+                    scene.remove(measurementText);
+                    measurementText = null;
+                }
+                pointMarkers.forEach(marker => scene.remove(marker));
+                pointMarkers = [];
+                clickedPoints = [];
+            }
+
+            function onMouseClick(event) {
+                event.preventDefault();
+
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = - (event.clientY / window.innerHeight) * 2 + 1;
+
+                raycaster.setFromCamera(mouse, camera);
+
+                if (loadedModel) {
+                    const intersects = raycaster.intersectObject(loadedModel, true);
+
+                    if (intersects.length > 0) {
+                        const intersectionPoint = intersects[0].point;
+
+                        if (clickedPoints.length === 2) {
+                            clearPreviousMeasurement();
+                        }
+
+                        clickedPoints.push(intersectionPoint);
+                        addPointMarker(intersectionPoint);
+
+                        if (clickedPoints.length === 2) {
+                            createMeasurementLine(clickedPoints[0], clickedPoints[1]);
+                        }
+                    }
+                }
+            }
+
+            function addPointMarker(position) {
+                const sphereGeometry = new THREE.SphereGeometry(0.02);
+                const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+                sphere.position.copy(position);
+                scene.add(sphere);
+                pointMarkers.push(sphere);
+            }
+
+            function createMeasurementLine(point1, point2) {
+                if (measurementLine) scene.remove(measurementLine);
+
+                const curve = new THREE.LineCurve3(point1, point2);
+                const tubeRadius = 0.02; // Adjust this value
+                const radialSegments = 8;
+                const tubularSegments = 64;
+                const geometry = new THREE.TubeGeometry(curve, tubularSegments, tubeRadius, radialSegments, false);
+                const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+
+                measurementLine = new THREE.Mesh(geometry, material);
+                scene.add(measurementLine);
+
+                lastMeasuredDistance  = point1.distanceTo(point2);
+                updateMeasurementTextBox();
+            }
+
+            function updateMeasurementTextBox() {
+                const measurementValue = document.getElementById('measurementValue');
+                const adjustedDistance = lastMeasuredDistance * measurementRatio;
+                measurementValue.textContent = `${adjustedDistance.toFixed(2)} units`;
+            }
+            function initMeasurementRatio() {
+                const measurementValue = document.getElementById('measurementValue');
+    
+                measurementValue.addEventListener('dblclick', function() {
+                    const currentValue = parseFloat(this.textContent);
+                    this.innerHTML = `
+                        <input type="number" id="measurementInput" value="${isNaN(currentValue) ? '' : currentValue}" step="0.01">
+                        <button id="saveButton">Save</button>
+                        <button id="cancelButton">Cancel</button>
+                    `;
+                    
+                    const input = document.getElementById('measurementInput');
+                    const saveButton = document.getElementById('saveButton');
+                    const cancelButton = document.getElementById('cancelButton');
+                    
+                    input.focus();
+                    
+                    saveButton.addEventListener('click', handleSave);
+                    cancelButton.addEventListener('click', handleCancel);
+
+                    function handleSave() {
+                        const newValue = parseFloat(input.value);
+                        if (!isNaN(newValue) && newValue > 0) {
+                            if (lastMeasuredDistance > 0) {
+                                measurementRatio = newValue / lastMeasuredDistance;
+                                updateMeasurementTextBox();
+                            } else {
+                                measurementValue.textContent = `${newValue.toFixed(2)} units`;
+                            }
+                        } else {
+                            alert("Please enter a valid number!!!");
+                        }
+                        cleanupListeners();
+                    }
+
+                    function handleCancel() {
+                        updateMeasurementTextBox();
+                        cleanupListeners();
+                    }
+
+                    function cleanupListeners() {
+                        saveButton.removeEventListener('click', handleSave);
+                        cancelButton.removeEventListener('click', handleCancel);
+                    }
+                });
+            }
+            
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+        </script>
+    </body>
+</html>
