@@ -1,3 +1,3 @@
 # Mesh_Measurator
 
-![sample](sample1.png)
+![sample](sample1.PNG)
